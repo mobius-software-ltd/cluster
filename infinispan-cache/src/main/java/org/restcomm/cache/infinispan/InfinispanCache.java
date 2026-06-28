@@ -37,6 +37,8 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import javax.transaction.RollbackException;
 import javax.transaction.Status;
@@ -65,6 +67,9 @@ import org.infinispan.counter.api.CounterType;
 import org.infinispan.counter.api.Storage;
 import org.infinispan.counter.configuration.CounterManagerConfigurationBuilder;
 import org.infinispan.counter.configuration.Reliability;
+import org.infinispan.lock.EmbeddedClusteredLockManagerFactory;
+import org.infinispan.lock.api.ClusteredLock;
+import org.infinispan.lock.api.ClusteredLockManager;
 import org.infinispan.manager.DefaultCacheManager;
 import org.infinispan.remoting.transport.Address;
 import org.infinispan.transaction.LockingMode;
@@ -120,7 +125,9 @@ public class InfinispanCache {
     private DefaultCacheManager jBossCacheContainer;
     private CounterConfiguration counterConfiguration;
     private CounterManager counterManager;
+    private ClusteredLockManager lockManager;
     private ConcurrentHashMap<String,AtomicLong> localCounters=new ConcurrentHashMap<String, AtomicLong>();    
+    private ConcurrentHashMap<String,Lock> localLocks=new ConcurrentHashMap<String, Lock>();    
     private TransactionManager txMgr;  
     
     public InfinispanCache(String name, DefaultCacheManager jBossCacheContainer, TransactionManager txMgr, ClassLoader classLoader, CacheDataExecutorService cacheDataExecutorService,IDGenerator<?> generator,Boolean isTree,Boolean logStats) {
@@ -183,7 +190,7 @@ public class InfinispanCache {
 			
 			GlobalConfigurationBuilder gcBuilder=new GlobalConfigurationBuilder();	
 			CounterManagerConfigurationBuilder counterBuilder = gcBuilder.addModule(CounterManagerConfigurationBuilder.class);
-		    counterBuilder.numOwner(copies).reliability(Reliability.AVAILABLE);
+			counterBuilder.numOwner(copies).reliability(Reliability.AVAILABLE);
 		    gcBuilder.defaultCacheName("slee-default").transport().clusterName(clusterName).defaultTransport().globalJmxStatistics().disable().shutdown().hookBehavior(ShutdownHookBehavior.DONT_REGISTER);			
 			if(serializer!=null) {
 				if(!(serializer instanceof JbossSerializer))
@@ -226,6 +233,13 @@ public class InfinispanCache {
             	if(!localMode) {
             		try {
             			counterManager = EmbeddedCounterManagerFactory.asCounterManager(jBossCacheContainer);
+            		}
+            		catch(NullPointerException ex) {
+            			logger.warn("Counter Manager is null, will use local counters");
+            		}
+            		
+            		try {
+            			lockManager = EmbeddedClusteredLockManagerFactory.from(jBossCacheContainer);
             		}
             		catch(NullPointerException ex) {
             			logger.warn("Counter Manager is null, will use local counters");
@@ -1825,9 +1839,9 @@ public class InfinispanCache {
 			callback.onSuccess(localValue.addAndGet(delta));	
 		}
 	}
-
+	
 	public Boolean compareAndSetAtomicValue(String name, Long oldValue, Long newValue) 
-	{
+	{		
 		if(counterManager!=null) {
 			CompletableFuture<Boolean> future = counterManager.getStrongCounter(name).compareAndSet(oldValue, newValue);
 			try {			
@@ -1871,6 +1885,136 @@ public class InfinispanCache {
 			}
 			
 			callback.onSuccess(localValue.compareAndSet(oldValue,newValue));
+		}
+	}
+
+	public Boolean getLock(String name, Long maxWaitMS) 
+	{
+		if(lockManager!=null) {
+			if(!lockManager.isDefined(name)) {
+				lockManager.defineLock(name);
+			}
+			
+			ClusteredLock lock = lockManager.get(name);
+			CompletableFuture<Boolean> future = lock.tryLock(maxWaitMS, TimeUnit.MILLISECONDS);
+			try {			
+				return future.get();
+			}
+			catch(ExecutionException | InterruptedException ex) {
+				throw new RuntimeException("An error occured while waiting for get atomic value result," + ex.getMessage(), ex);		    	
+			}
+		}
+		else {
+			Lock localValue=localLocks.get(name);
+			if(localValue == null)
+			{
+				Lock newLock = new ReentrantLock();
+				Lock oldLock = localLocks.putIfAbsent(name, newLock);
+				if(oldLock != null)
+					localValue = oldLock;
+			}
+			
+			try {			
+				return localValue.tryLock(maxWaitMS, TimeUnit.MILLISECONDS);
+			}
+			catch(InterruptedException ex) {
+				throw new RuntimeException("An error occured while waiting for get atomic value result," + ex.getMessage(), ex);		    	
+			}
+		}
+	}
+
+	public void getLockAsync(String name, Long maxWaitMS,AsyncCacheCallback<Boolean> callback) 
+	{
+		if(lockManager!=null) {
+			if(!lockManager.isDefined(name)) {
+				lockManager.defineLock(name);
+			}
+			
+			ClusteredLock lock = lockManager.get(name);
+			CompletableFuture<Boolean> future = lock.tryLock(maxWaitMS, TimeUnit.MILLISECONDS);
+			future.whenCompleteAsync((r, t) -> {
+	    		if(t!=null)
+	    			callback.onError(t);
+	    		else
+	    			callback.onSuccess(r);
+	    	});
+		}
+		else {
+			Lock localValue=localLocks.get(name);
+			if(localValue == null)
+			{
+				Lock newLock = new ReentrantLock();
+				Lock oldLock = localLocks.putIfAbsent(name, newLock);
+				if(oldLock != null)
+					localValue = oldLock;
+			}
+			
+			try {			
+				callback.onSuccess(localValue.tryLock(maxWaitMS, TimeUnit.MILLISECONDS));			
+			}
+			catch(InterruptedException ex) {
+				throw new RuntimeException("An error occured while waiting for get atomic value result," + ex.getMessage(), ex);		    	
+			}
+		}
+	}
+
+	public void releaseLock(String name) 
+	{
+		if(lockManager!=null) {
+			if(!lockManager.isDefined(name)) {
+				lockManager.defineLock(name);
+			}
+			
+			ClusteredLock lock = lockManager.get(name);
+			CompletableFuture<Void> future = lock.unlock();
+			try {			
+				future.get();
+			}
+			catch(ExecutionException | InterruptedException ex) {
+				throw new RuntimeException("An error occured while waiting for get atomic value result," + ex.getMessage(), ex);		    	
+			}
+		}
+		else {
+			Lock localValue=localLocks.get(name);
+			if(localValue == null)
+			{
+				Lock newLock = new ReentrantLock();
+				Lock oldLock = localLocks.putIfAbsent(name, newLock);
+				if(oldLock != null)
+					localValue = oldLock;
+			}
+			
+			localValue.unlock();			
+		}
+	}
+
+	public void releaseLockAsync(String name,AsyncCacheCallback<Void> callback) 
+	{
+		if(lockManager!=null) {
+			if(!lockManager.isDefined(name)) {
+				lockManager.defineLock(name);
+			}
+			
+			ClusteredLock lock = lockManager.get(name);
+			CompletableFuture<Void> future = lock.unlock();
+			future.whenCompleteAsync((r, t) -> {
+	    		if(t!=null)
+	    			callback.onError(t);
+	    		else
+	    			callback.onSuccess(r);
+	    	});
+		}
+		else {
+			Lock localValue=localLocks.get(name);
+			if(localValue == null)
+			{
+				Lock newLock = new ReentrantLock();
+				Lock oldLock = localLocks.putIfAbsent(name, newLock);
+				if(oldLock != null)
+					localValue = oldLock;
+			}
+			
+			localValue.unlock();			
 		}
 	}
 }

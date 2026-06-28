@@ -856,4 +856,28 @@ public class InfinispanCluster implements RestcommCluster,CacheListener {
     	getCache().compareAndSetAtomicValueAsync(name, oldValue, newValue, callback);
 		updateStats(ClusterOperation.PUT, (System.currentTimeMillis()-startTime));	
 	}
+
+	@Override
+	public Boolean getLock(String name, Long maxWaitMS) 
+	{
+		return getCache().getLock(name, maxWaitMS);		
+	}
+
+	@Override
+	public void getLockAsync(String name, Long maxWaitMS, AsyncCacheCallback<Boolean> callback) 
+	{
+		getCache().getLockAsync(name, maxWaitMS, callback);
+	}
+
+	@Override
+	public void releaseLock(String name) 
+	{
+		getCache().releaseLock(name);
+	}
+
+	@Override
+	public void releaseLockAsync(String name, AsyncCacheCallback<Void> callback) 
+	{
+		getCache().releaseLockAsync(name, callback);
+	}
 }

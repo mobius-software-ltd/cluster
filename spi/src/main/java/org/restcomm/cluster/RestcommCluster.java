@@ -383,6 +383,26 @@ public interface RestcommCluster {
 	public void compareAndSetAtomicValueAsync(String name, Long oldValue, Long newValue,AsyncCacheCallback<Boolean> callback);
 	
 	/**
+	 * tries to get distributed lock for specific period.
+	 */
+	public Boolean getLock(String name, Long maxWaitMS);
+	
+	/**
+	 * tries to get distributed lock for specific period.
+	 */
+	public void getLockAsync(String name, Long maxWaitMS,AsyncCacheCallback<Boolean> callback);
+	
+	/**
+	 * releases distributed lock
+	 */
+	public void releaseLock(String name);
+	
+	/**
+	 * releases distributed lock async
+	 */
+	public void releaseLockAsync(String name,AsyncCacheCallback<Void> callback);
+	
+	/**
 	 * Returns all keys from cache.
 	 * @return Set<?>
 	 */
