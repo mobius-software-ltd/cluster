@@ -4,7 +4,7 @@
 	<parent>
 		<groupId>com.mobius-software.cluster</groupId>
 		<artifactId>cluster-parent</artifactId>
-		<version>8.0.0-51-java11</version>
+		<version>8.0.0-52-SNAPSHOT</version>
 	</parent>
 	
 	<artifactId>cache-core</artifactId>
