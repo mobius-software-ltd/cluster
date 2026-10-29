@@ -95,5 +95,10 @@ public class InfinispanCacheFactory implements RestcommCacheFactory
 		    this.cacheExecutorService.terminate();
 		    this.cacheExecutorService = null;
 		}
-    }		
+    }
+    
+    public DefaultCacheManager getCacheManager()
+    {
+    	return jBossCacheContainer;
+    }
 }
